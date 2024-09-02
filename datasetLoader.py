@@ -21,13 +21,7 @@ def __():
 
 @app.cell
 def __():
-    raw_data_path = "/cbica/home/gangarav/raw_data"
-    # titles of the datasets when downloaded
-    RSNA_2024_competition = 'rsna-2024-lumbar-spine-degenerative-classification'
-    LSD_dataset = 'LSD'
-    # places to put the processed data
-    RSNA_processed = '/cbica/home/gangarav/RSNA_PROCESSED'
-    LSD_processed = '/cbica/home/gangarav/LSD_PROCESSED'
+    from config import raw_data_path, RSNA_2024_competition, LSD_dataset, RSNA_processed, LSD_processed
     return (
         LSD_dataset,
         LSD_processed,
@@ -313,7 +307,7 @@ def __(
         orientation, direction, err = get_axis_of_max_variation_and_direction(dcm)
         if err:
             errors.append(f"IOP_MISSING")
-        
+
         iop, err = dicom_series_to_image_orientation_patient(dcm)
         if err:
             errors.append(f"IOP_MISSING")
@@ -391,40 +385,40 @@ def __(
 
 
 @app.cell
-def __(RSNA_2024_competition, os, pd, process_dicom_series, raw_data_path):
-    # check if the folder doesn't already exist
-    if not os.path.exists('/cbica/home/gangarav/RSNA_PROCESSED'):
-        # iterate through all of the folders in the raw_data_path
-        raw_dicom_folder = f'{raw_data_path}/{RSNA_2024_competition}/train_images'
-        output_folder = '/cbica/home/gangarav/RSNA_PROCESSED'
-
-        results = []
-
-        for i, RSNA_study in enumerate(os.listdir(raw_dicom_folder)):
-            if i % 100 == 0:
-                print(i)
-            for RSNA_series in os.listdir(os.path.join(raw_dicom_folder, RSNA_study)):
-                results.append(
-                    process_dicom_series(
-                        "RSNA2024",
-                        raw_dicom_folder,
-                        RSNA_study,
-                        RSNA_series,
-                        output_folder
+def __(
+    RSNA_2024_competition,
+    RSNA_processed,
+    os,
+    pd,
+    process_dicom_series,
+    raw_data_path,
+):
+    def process_RSNA_2024_dataset(processed_data_dir, raw_data_dir):
+        if not os.path.exists(processed_data_dir):
+            results = []
+            for i, RSNA_study in enumerate(os.listdir(raw_data_dir)):
+                if i % 100 == 0:
+                    print(i)
+                for RSNA_series in os.listdir(os.path.join(raw_data_dir, RSNA_study)):
+                    results.append(
+                        process_dicom_series(
+                            "RSNA2024",
+                            raw_data_dir,
+                            RSNA_study,
+                            RSNA_series,
+                            processed_data_dir
+                        )
                     )
-                )
+        
+            pd.DataFrame(results).to_pickle(f'{processed_data_dir}/dicom_info.pkl')
+        else:
+            print(f"Directory {processed_data_dir} given to store processed results already exists")
 
-        df = pd.DataFrame(results)
-        df.to_pickle('dataframe.pkl')
-    return (
-        RSNA_series,
-        RSNA_study,
-        df,
-        i,
-        output_folder,
-        raw_dicom_folder,
-        results,
+    process_RSNA_2024_dataset(
+        processed_data_dir=RSNA_processed,
+        raw_data_dir=f'{raw_data_path}/{RSNA_2024_competition}/train_images'
     )
+    return process_RSNA_2024_dataset,
 
 
 @app.cell
@@ -462,51 +456,42 @@ def __(
 
 
 @app.cell
-def __(LSD_dataset, os, pd, process_dicom_series, raw_data_path):
-    raw_dicom_folder = f"{raw_data_path}/{LSD_dataset}/01_MRI_Data"
-    output_folder = '/cbica/home/gangarav/LSD_PROCESSED'
+def __(
+    LSD_dataset,
+    LSD_processed,
+    os,
+    pd,
+    process_dicom_series,
+    raw_data_path,
+):
+    def process_LSD_dataset(processed_data_dir, raw_data_dir):
+        if not os.path.exists(processed_data_dir):
+            
+            results = []
+            for i, LSD_patient in enumerate(os.listdir(raw_data_dir)):
+                if i % 100 == 0:
+                    print(i)
+                for LSD_study in os.listdir(os.path.join(raw_data_dir, LSD_patient)):
+                    for LSD_series in os.listdir(os.path.join(raw_data_dir, LSD_patient, LSD_study)):
+                        results.append(
+                            process_dicom_series(
+                                "LSD",
+                                raw_data_dir,
+                                f"{LSD_patient}/{LSD_study}",
+                                LSD_series,
+                                processed_data_dir
+                            )
+                        )
 
-    results = []
+            pd.DataFrame(results).to_pickle(f'{processed_data_dir}/dicom_info.pkl')
+        else:
+            print(f"Directory {processed_data_dir} given to store processed results already exists")
 
-    for i, LSD_patient in enumerate(os.listdir(raw_dicom_folder)):
-        if i % 100 == 0:
-            print(i)
-        for LSD_study in os.listdir(os.path.join(raw_dicom_folder, LSD_patient)):
-            for LSD_series in os.listdir(os.path.join(raw_dicom_folder, LSD_patient, LSD_study)):
-                results.append(
-                    process_dicom_series(
-                        "LSD",
-                        raw_dicom_folder,
-                        f"{LSD_patient}/{LSD_study}",
-                        LSD_series,
-                        output_folder
-                    )
-                )
-
-    df = pd.DataFrame(results)
-    df.to_pickle('lsd_dataframe.pkl')
-    return (
-        LSD_patient,
-        LSD_series,
-        LSD_study,
-        df,
-        i,
-        output_folder,
-        raw_dicom_folder,
-        results,
+    process_LSD_dataset(
+        processed_data_dir=LSD_processed,
+        raw_data_dir=f"{raw_data_path}/{LSD_dataset}/01_MRI_Data"
     )
-
-
-@app.cell
-def __(df):
-    df
-    return
-
-
-@app.cell
-def __(pd):
-    pd.read_pickle('dataframe.pkl')
-    return
+    return process_LSD_dataset,
 
 
 @app.cell
