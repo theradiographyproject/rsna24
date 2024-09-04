@@ -48,4 +48,4 @@ def main():
     )
     trainer = L.Trainer(accelerator="gpu", logger=logger, max_epochs=100000000, accumulate_grad_batches=gradients_to_accumulate)
   
-    trainer.fit(model, datamodule=data, ckpt_path="/cbica/home/gangarav/rsna24/logs/reset/test/checkpoints/epoch=3-step=68.ckpt")
+    trainer.fit(model, datamodule=data) #, ckpt_path="/cbica/home/gangarav/rsna24/logs/reset/test/checkpoints/epoch=3-step=68.ckpt")
