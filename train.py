@@ -19,18 +19,18 @@ def main():
     gradients_to_accumulate = (batch_size//gpu_factor)
     print(gpu_factor)
 
-    model = EndToEnd.load_from_checkpoint("/cbica/home/gangarav/rsna24/logs/reset/test/checkpoints/epoch=3-step=68.ckpt")
+    #model = EndToEnd.load_from_checkpoint("/cbica/home/gangarav/rsna24/logs/reset/test/checkpoints/epoch=3-step=68.ckpt")
 
-    # model = EndToEnd(
-    #   dim=768,
-    #   patch_size=(1,16,16),
-    #   depth=12,
-    #   heads=12,
-    #   pos_head_dropout=0.25,
-    #   mim_depth=4,
-    #   mim_head_layer_dropout=0.1,
-    #   learning_rate=1e-4
-    # )
+    model = EndToEnd(
+      dim=768,
+      patch_size=(1,16,16),
+      depth=12,
+      heads=12,
+      pos_head_dropout=0.25,
+      mim_depth=4,
+      mim_head_layer_dropout=0.1,
+      learning_rate=1e-4
+    )
     
     data = DataModule(
       mini_batch_size=gpu_factor,
