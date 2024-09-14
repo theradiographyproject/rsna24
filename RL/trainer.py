@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from tqdm import tqdm
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from tensorboard_logger import configure, log_value
+#from tensorboard_logger import configure, log_value
 
 from model import RecurrentAttention
 from utils import AverageMeter
@@ -130,7 +130,7 @@ class Trainer:
             device=self.device,
             requires_grad=True,
         )
-        l_t = torch.FloatTensor(self.batch_size, 2).uniform_(-1, 1).to(self.device)
+        l_t = torch.FloatTensor(self.batch_size, 3).uniform_(-1, 1).to(self.device)
         l_t.requires_grad = True
 
         return h_t, l_t
@@ -215,7 +215,8 @@ class Trainer:
 
         tic = time.time()
         with tqdm(total=self.num_train) as pbar:
-            for i, (x, y) in enumerate(self.train_loader):
+            for i, (x, spacing, y) in enumerate(self.train_loader):
+                print(spacing, y)
                 self.optimizer.zero_grad()
 
                 x, y = x.to(self.device), y.to(self.device)
@@ -230,7 +231,7 @@ class Trainer:
 
                 # save images
                 imgs = []
-                imgs.append(x[0:9])
+                imgs.append(x)
 
                 # extract the glimpses
                 locs = []
@@ -238,44 +239,43 @@ class Trainer:
                 baselines = []
                 for t in range(self.num_glimpses - 1):
                     # forward pass through model
-                    h_t, l_t, b_t, p = self.model(x, l_t, h_t)
+                    h_t, l_t, b_t, p = self.model(x, spacing, l_t, h_t)
 
                     # store
-                    locs.append(l_t[0:9])
+                    locs.append(l_t)
                     baselines.append(b_t)
                     log_pi.append(p)
 
                 # last iteration
-                h_t, l_t, b_t, log_probas, p = self.model(x, l_t, h_t, last=True)
+                h_t, l_t, b_t, p = self.model(x, spacing, l_t, h_t, last=True)
                 log_pi.append(p)
                 baselines.append(b_t)
-                locs.append(l_t[0:9])
+                locs.append(l_t)
 
                 # convert list to tensors and reshape
                 baselines = torch.stack(baselines).transpose(1, 0)
                 log_pi = torch.stack(log_pi).transpose(1, 0)
 
-                # calculate reward
-                predicted = torch.max(log_probas, 1)[1]
-                R = (predicted.detach() == y).float()
+                # Instead of classification, compute loss based on l_t vs target (y is now (x, y) positions)
+                loss_position = F.mse_loss(l_t, y)
+
+                # calculate reinforce loss
+                R = 1.0 - F.mse_loss(l_t, y, reduction='none').mean(dim=1)  # Reward based on proximity
                 R = R.unsqueeze(1).repeat(1, self.num_glimpses)
 
-                # compute losses for differentiable modules
-                loss_action = F.nll_loss(log_probas, y)
                 loss_baseline = F.mse_loss(baselines, R)
 
                 # compute reinforce loss
-                # summed over timesteps and averaged across batch
                 adjusted_reward = R - baselines.detach()
                 loss_reinforce = torch.sum(-log_pi * adjusted_reward, dim=1)
                 loss_reinforce = torch.mean(loss_reinforce, dim=0)
 
                 # sum up into a hybrid loss
-                loss = loss_action + loss_baseline + loss_reinforce * 0.01
+                loss = loss_position + loss_baseline + loss_reinforce * 0.01
 
-                # compute accuracy
-                correct = (predicted == y).float()
-                acc = 100 * (correct.sum() / len(y))
+                # accuracy can be measured by the distance between the predicted and target positions
+                dist = torch.sqrt(((l_t - y) ** 2).sum(dim=1))  # Euclidean distance
+                acc = 100 * (1 - dist.mean())  # Higher is better, so we invert the distance measure
 
                 # store
                 losses.update(loss.item(), x.size()[0])

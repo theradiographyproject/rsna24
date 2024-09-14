@@ -3,109 +3,137 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torch.distributions import Normal
+import numpy as np
 
+import sys
+import os
+# Get the parent directory path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-class Retina:
-    """A visual retina.
+# Add the parent directory to sys.path
+sys.path.append(parent_dir)
+from modelEmbedding import EndToEnd
+from datasetTrain import patchify
 
-    Extracts a foveated glimpse `phi` around location `l`
-    from an image `x`.
+class PrismExtractor:
+    """Extract a sub-prism from a dicom.
 
-    Concretely, encodes the region around `l` at a
-    high-resolution but uses a progressively lower
-    resolution for pixels further from `l`, resulting
-    in a compressed representation of the original
-    image `x`.
+    Extracts a prism `phi` around location `l`
+    from an image `x` with a maximum of `n` patches.
 
     Args:
-        x: a 4D Tensor of shape (B, H, W, C). The minibatch
-            of images.
-        l: a 2D Tensor of shape (B, 2). Contains normalized
+        x: a 4D Tensor of shape (B, D, R, C). The minibatch
+            of series.
+        l: a 2D Tensor of shape (B, z, y, x, d, r, c). Contains normalized
             coordinates in the range [-1, 1].
-        g: size of the first square patch.
-        k: number of patches to extract in the glimpse.
-        s: scaling factor that controls the size of
-            successive patches.
 
     Returns:
-        phi: a 5D tensor of shape (B, k, g, g, C). The
+        phi: a 4D tensor of shape (B, d, r, c). The
             foveated glimpse of the image.
     """
 
-    def __init__(self, g, k, s):
-        self.g = g
-        self.k = k
-        self.s = s
+    def __init__(self):
+        self.model = EndToEnd.load_from_checkpoint("/cbica/home/gangarav/rsna24/checkpoint_kai/09092024_transfer/epoch=14-step=149760.ckpt")
+        self.model = self.model.to('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model.eval()
+        self.model.prism_encoder.eval()
+        self.model.self_MIM_head.eval()
+        self.model.pos_classifier_head.eval()
 
-    def foveate(self, x, l):
-        """Extract `k` square patches of size `g`, centered
-        at location `l`. The initial patch is a square of
-        size `g`, and each subsequent patch is a square
-        whose side is `s` times the size of the previous
-        patch.
+    def emb_forward(self, nm_patches, nm_indices, m_indices):
+        with torch.no_grad():
+            embedding, _ = self.model.prism_mask_embedder(nm_patches, nm_indices, m_indices)
+            encoded = self.model.prism_encoder(embedding)
+            pos = self.model.pos_classifier_head.position_embedding(self.model.pos_classifier_head.token, context=encoded).squeeze(1)
+            return pos
 
-        The `k` patches are finally resized to (g, g) and
-        concatenated into a tensor of shape (B, k, g, g, C).
-        """
-        phi = []
-        size = self.g
+    def load_prism_from_arr(self, arr, prism_indices, patch_size, spacing, M, N, origin=None):
+        # assume that arr has already been normalized
+        slices = [slice(*s) for s in prism_indices]
+        prism = arr[tuple(slices)].unsqueeze(0)
+        midpoint_arr_coords = np.array([np.mean(i_pairs) for i_pairs in prism_indices]) - [0.5, 0.5, 0.5]
+      
+        offset = [0, 0, 0] if origin is None else midpoint_arr_coords - origin
+      
+        m_patch, nm_patch, sk_patch, \
+        mask_indices, nonmask_indices, skipped_indices, \
+        mask_indices_pt_coords, nonmask_indices_pt_coords, skipped_indices_pt_coords \
+        = patchify(prism, offset, patch_size, spacing, 0, N)
 
-        # extract k patches of increasing size
-        for i in range(self.k):
-            phi.append(self.extract_patch(x, l, size))
-            size = int(self.s * size)
+        nm_patch = nm_patch.unsqueeze(0)
+        nm_patch = nm_patch.view(nm_patch.shape[0], nm_patch.shape[1], -1)
 
-        # resize the patches to squares of size g
-        for i in range(1, len(phi)):
-            k = phi[i].shape[-1] // self.g
-            phi[i] = F.avg_pool2d(phi[i], k)
-
-        # concatenate into a single tensor and flatten
-        phi = torch.cat(phi, 1)
-        phi = phi.view(phi.shape[0], -1)
-
-        return phi
-
-    def extract_patch(self, x, l, size):
-        """Extract a single patch for each image in `x`.
+        return nm_patch, torch.tensor(nonmask_indices).unsqueeze(0), torch.tensor(mask_indices).unsqueeze(0), midpoint_arr_coords
+  
+    def extract_prism_emb(self, X, I, L):
+        """Extract sub-prism from `x` as described by `l`.
 
         Args:
-        x: a 4D Tensor of shape (B, H, W, C). The minibatch
-            of images.
-        l: a 2D Tensor of shape (B, 2).
-        size: a scalar defining the size of the extracted patch.
+        X: a 4D Tensor of shape (B, D, R, C). The minibatch
+            of series.
+        L: a 2D Tensor of shape (B, 6) (z, y, x, d, r, c). 
+           z, y, x are normalized coordinates in the range [-1, 1].
+           d, r, c specify the dimensions of the prism to extract.
+        I: metadata tensor
 
         Returns:
-            patch: a 4D Tensor of shape (B, size, size, C)
+            prism: a 4D Tensor of shape (B, d, r, c)
         """
-        B, C, H, W = x.shape
+        B, D, R, C = X.shape
+        embs = []
+        
+        for b in range(B):
+            #z, y, x, d, r, c = L[b]
+            z, y, x = L[b]
+            d, r, c = 4, 64, 64
+            #
+            slice_indices = self.get_subsample_slices(z, y, x, d, r, c, D, R, C)
+            
+            nm_patch, nm_indices, m_indices, midpoint_arr_coords = self.load_prism_from_arr(X[b], slice_indices, (1, 16, 16), (4, 1, 1), 0, 100)
+            nm_indices = nm_indices.to('cuda' if torch.cuda.is_available() else 'cpu')
+            m_indices = m_indices.to('cuda' if torch.cuda.is_available() else 'cpu')
+            emb = self.emb_forward(nm_patch, nm_indices, m_indices)
+            embs.append(emb)
 
-        start = self.denormalize(H, l)
-        end = start + size
+        return torch.stack(embs)
 
-        # pad with zeros
-        x = F.pad(x, (size // 2, size // 2, size // 2, size // 2))
+    def get_subsample_slices(self, z, y, x, d, r, c, D, R, C):
+        # Convert normalized coordinates (-1 to 1) to array indices using PyTorch functions
+        z_idx = int(torch.round((z + 1) * (D - 1) / 2).item())
+        y_idx = int(torch.round((y + 1) * (R - 1) / 2).item())
+        x_idx = int(torch.round((x + 1) * (C - 1) / 2).item())
+    
+        # Compute the initial start indices
+        z_start = z_idx - d // 2
+        y_start = y_idx - r // 2
+        x_start = x_idx - c // 2
+    
+        # Adjust the start indices to ensure they are within bounds and the size is preserved
+        z_start = max(0, min(z_start, D - d))
+        y_start = max(0, min(y_start, R - r))
+        x_start = max(0, min(x_start, C - c))
+    
+        # Compute the end indices to maintain the desired size
+        z_end = z_start + d
+        y_end = y_start + r
+        x_end = x_start + c
+    
+        return ((z_start, z_end), (y_start, y_end), (x_start, x_end))
 
-        # loop through mini-batch and extract patches
-        patch = []
-        for i in range(B):
-            patch.append(x[i, :, start[i, 1] : end[i, 1], start[i, 0] : end[i, 0]])
-        return torch.stack(patch)
 
-    def denormalize(self, T, coords):
-        """Convert coordinates in the range [-1, 1] to
-        coordinates in the range [0, T] where `T` is
-        the size of the image.
-        """
-        return (0.5 * ((coords + 1.0) * T)).long()
+class Embedder(nn.Module):
+    def __init__(self, d):
+        super().__init__()
+        self.d = d
+        model = EndToEnd.load_from_checkpoint("/cbica/home/gangarav/rsna24/checkpoint_kai/09092024_transfer/epoch=14-step=149760.ckpt")
+        model.eval()
+        model.prism_encoder.eval()
+        model.self_MIM_head.eval()
+        model.pos_classifier_head.eval()
 
-    def exceeds(self, from_x, to_x, from_y, to_y, T):
-        """Check whether the extracted patch will exceed
-        the boundaries of the image of size `T`.
-        """
-        if (from_x < 0) or (from_y < 0) or (to_x > T) or (to_y > T):
-            return True
-        return False
+    def forward(self, x):
+        return torch.randn(x.shape[0], self.d).to(torch.device("cuda"))
+  
 
 
 class GlimpseNetwork(nn.Module):
@@ -136,7 +164,7 @@ class GlimpseNetwork(nn.Module):
         c: number of channels in each image.
         x: a 4D Tensor of shape (B, H, W, C). The minibatch
             of images.
-        l_t_prev: a 2D tensor of shape (B, 2). Contains the glimpse
+        l_t_prev: a 2D tensor of shape (B, 6). Contains the glimpse
             coordinates [x, y] for the previous timestep `t-1`.
 
     Returns:
@@ -146,31 +174,35 @@ class GlimpseNetwork(nn.Module):
             timestep `t`.
     """
 
-    def __init__(self, h_g, h_l, g, k, s, c):
+    def __init__(self, h_g, h_l):
         super().__init__()
 
-        self.retina = Retina(g, k, s)
+        self.prismExtractor = PrismExtractor()
 
-        # glimpse layer
-        D_in = k * g * g * c
+        #glimpse layer (embedding model, will return the position embedding vector, this model should not be backpropped)
+        D_in = 768 # FC from embedder
         self.fc1 = nn.Linear(D_in, h_g)
 
+        # r = random.randint(6, 8)
+        # c = random.randint(6, 8)
+        # d = random.randint(1, 3)
+      
         # location layer
-        D_in = 2
+        D_in = 3
         self.fc2 = nn.Linear(D_in, h_l)
 
         self.fc3 = nn.Linear(h_g, h_g + h_l)
         self.fc4 = nn.Linear(h_l, h_g + h_l)
 
-    def forward(self, x, l_t_prev):
+    def forward(self, x, spacing, l_t_prev):
         # generate glimpse phi from image x
-        phi = self.retina.foveate(x, l_t_prev)
+        emb = self.prismExtractor.extract_prism_emb(x, spacing, l_t_prev)
 
         # flatten location vector
         l_t_prev = l_t_prev.view(l_t_prev.size(0), -1)
 
         # feed phi and l to respective fc layers
-        phi_out = F.relu(self.fc1(phi))
+        phi_out = F.relu(self.fc1(emb))
         l_out = F.relu(self.fc2(l_t_prev))
 
         what = self.fc3(phi_out)
@@ -290,8 +322,8 @@ class LocationNetwork(nn.Module):
             the current time step `t`.
 
     Returns:
-        mu: a 2D vector of shape (B, 2).
-        l_t: a 2D vector of shape (B, 2).
+        mu: a 2D vector of shape (B, 3).
+        l_t: a 2D vector of shape (B, 3).
     """
 
     def __init__(self, input_size, output_size, std):
@@ -303,15 +335,16 @@ class LocationNetwork(nn.Module):
         self.fc = nn.Linear(input_size, hid_size)
         self.fc_lt = nn.Linear(hid_size, output_size)
 
-    def forward(self, h_t):
+    def forward(self, h_t, std):
         # compute mean
         feat = F.relu(self.fc(h_t.detach()))
         mu = torch.tanh(self.fc_lt(feat))
+        print(mu)
 
         # reparametrization trick
-        l_t = torch.distributions.Normal(mu, self.std).rsample()
+        l_t = torch.distributions.Normal(mu, std).rsample()
         l_t = l_t.detach()
-        log_pi = Normal(mu, self.std).log_prob(l_t)
+        log_pi = Normal(mu, std).log_prob(l_t)
 
         # we assume both dimensions are independent
         # 1. pdf of the joint is the product of the pdfs

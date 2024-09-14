@@ -129,6 +129,12 @@ def patchify(prism, offset, patch_size, voxel_spacing, M, N):
 
     return m_patch, nm_patch, sk_patch, mask_indices, nonmask_indices, skipped_indices, mask_indices_pt_coords, nonmask_indices_pt_coords, skipped_indices_pt_coords
 
+def handle_value_as_list_or_float(val):
+    if isinstance(val, list):
+        return sum(float(v) for v in val)/len(val)
+    else:
+        return float(val)
+
 def load_prism_from_row(row, prism_indices, patch_size, M, N, origin=None):
     if M==0 and N==0:
         # return empty versions of the normal return
@@ -151,7 +157,7 @@ def load_prism_from_row(row, prism_indices, patch_size, M, N, origin=None):
     m_patch, nm_patch, sk_patch, \
     mask_indices, nonmask_indices, skipped_indices, \
     mask_indices_pt_coords, nonmask_indices_pt_coords, skipped_indices_pt_coords \
-    = patchify(prism, offset, patch_size, [row['z_spacing'], row['x_spacing'], row['y_spacing']], M, N)
+    = patchify(prism, offset, patch_size, [handle_value_as_list_or_float(row['z_spacing']), handle_value_as_list_or_float(row['x_spacing']), handle_value_as_list_or_float(row['y_spacing'])], M, N)
 
 
     return m_patch, nm_patch, sk_patch, mask_indices, nonmask_indices, skipped_indices, prism, midpoint_arr_coords, midpoint_patient_coords, mask_indices_pt_coords, nonmask_indices_pt_coords, skipped_indices_pt_coords

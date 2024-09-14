@@ -1,5 +1,16 @@
 import argparse
 
+# Base path for all raw data
+raw_data_path = '/cbica/home/gangarav/raw_data'
+
+# Titles of the datasets when downloaded
+RSNA_2024_competition = 'rsna-2024-lumbar-spine-degenerative-classification'
+LSD_dataset = 'LSD'
+
+# Output directories for the processed datasets
+RSNA_processed = '/cbica/home/gangarav/RSNA_PROCESSED'
+LSD_processed = '/cbica/home/gangarav/LSD_PROCESSED'
+
 arg_lists = []
 parser = argparse.ArgumentParser(description="RAM")
 
